@@ -8,11 +8,26 @@ import html
 import os
 import secrets
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+try:
+    from streamlit_cookies_controller import CookieController
+except ImportError:  # Keep core app usable if an optional local install has not been refreshed yet.
+    class CookieController:  # type: ignore[no-redef]
+        def __init__(self, key: str):
+            self._key = key
+
+        def get(self, name: str):
+            return None
+
+        def set(self, name: str, value, **kwargs) -> None:
+            return None
+
+        def remove(self, name: str, **kwargs) -> None:
+            return None
 
 
 APP_DIR = Path(__file__).resolve().parent
@@ -30,6 +45,9 @@ DELIVERY_STATUSES = {"Ready for pickup", "In transit", "Completed"}
 FALLBACK_EMOJI = {"Vegetables": "🥬", "Fruits": "🍎", "Grains": "🌾", "Dairy": "🥛", "Herbs": "🌿", "Other": "🧺"}
 
 st.set_page_config(page_title="Farm2Biz", page_icon="🌾", layout="wide")
+AUTH_COOKIE = "farm2biz_login"
+AUTH_DAYS = 7
+cookies = CookieController(key="farm2biz_browser_cookies")
 
 
 class PostgresConnection:
@@ -159,6 +177,10 @@ def _create_auxiliary_tables(con, postgres: bool) -> None:
         product_id {id_type} NOT NULL REFERENCES products(id), farmer_id {id_type} NOT NULL REFERENCES users(id),
         category TEXT NOT NULL, price DOUBLE PRECISION NOT NULL, unit TEXT NOT NULL,
         observed_at {'TIMESTAMP' if postgres else 'TEXT'} NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
+    con.execute(f"""CREATE TABLE IF NOT EXISTS auth_sessions (
+        token_hash TEXT PRIMARY KEY, user_id {id_type} NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        expires_at {'TIMESTAMPTZ' if postgres else 'TEXT'} NOT NULL,
+        created_at {'TIMESTAMPTZ' if postgres else 'TEXT'} NOT NULL DEFAULT CURRENT_TIMESTAMP)""")
     con.execute("CREATE INDEX IF NOT EXISTS idx_orders_farmer_status ON orders(farmer_id, status)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_orders_buyer_status ON orders(buyer_id, status)")
     con.execute("CREATE INDEX IF NOT EXISTS idx_notifications_user_read ON notifications(user_id, is_read)")
@@ -182,6 +204,42 @@ def verify_password(password: str, stored: str) -> bool:
 
 def current_user() -> dict | None:
     return st.session_state.get("user")
+
+
+def _token_hash(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def remember_login(user: dict) -> None:
+    """Create a revocable, expiring browser login token; never store the raw token in the DB."""
+    token = secrets.token_urlsafe(32)
+    expires = datetime.now(timezone.utc) + timedelta(days=AUTH_DAYS)
+    with connect() as con:
+        con.execute("DELETE FROM auth_sessions WHERE expires_at <= ?", (datetime.now(timezone.utc),))
+        con.execute("INSERT INTO auth_sessions(token_hash,user_id,expires_at) VALUES(?,?,?)",
+                    (_token_hash(token), user["id"], expires))
+    cookies.set(AUTH_COOKIE, token, max_age=AUTH_DAYS * 24 * 60 * 60, secure=True, same_site="lax")
+
+
+def restore_login_from_cookie() -> None:
+    """Restore a valid remembered user after Streamlit starts a fresh session on refresh."""
+    token = cookies.get(AUTH_COOKIE)
+    if not token or current_user():
+        return
+    with connect() as con:
+        row = con.execute("""SELECT u.* FROM auth_sessions s JOIN users u ON u.id=s.user_id
+                            WHERE s.token_hash=? AND s.expires_at>?""",
+                          (_token_hash(str(token)), datetime.now(timezone.utc))).fetchone()
+    if row:
+        st.session_state.user = dict(row)
+
+
+def forget_login() -> None:
+    token = cookies.get(AUTH_COOKIE)
+    if token:
+        with connect() as con:
+            con.execute("DELETE FROM auth_sessions WHERE token_hash=?", (_token_hash(str(token)),))
+        cookies.remove(AUTH_COOKIE, secure=True, same_site="lax")
 
 
 def register(name: str, email: str, password: str, role: str, business: str, location: str) -> None:
@@ -220,11 +278,16 @@ def auth_screen() -> None:
         with st.form("login"):
             email = st.text_input("Email", key="login_email")
             password = st.text_input("Password", type="password", key="login_password")
+            stay_signed_in = st.checkbox("Stay signed in on this device for 7 days", value=True)
             submitted = st.form_submit_button("Sign in", type="primary")
         if submitted:
             user = login(email, password)
             if user:
                 st.session_state.user = user
+                if stay_signed_in:
+                    remember_login(user)
+                else:
+                    forget_login()
                 st.rerun()
             st.error("Email or password is incorrect.")
     with register_tab:
@@ -693,6 +756,7 @@ def main() -> None:
             st.error(integrity_message)
             st.stop()
         st.session_state.farm2biz_integrity_checked = True
+    restore_login_from_cookie()
     if not current_user():
         auth_screen()
         return
@@ -708,6 +772,7 @@ def main() -> None:
         else:
             st.caption("Storage: SQLite · local file; hosted deployments need DATABASE_URL for durable data")
         if st.button("Sign out", use_container_width=True):
+            forget_login()
             st.session_state.pop("user", None)
             st.rerun()
         st.divider()
