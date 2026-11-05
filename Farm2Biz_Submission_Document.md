@@ -70,6 +70,7 @@ The application demonstrates a direct digital channel for farmers and business b
 ## 10. Submission links
 
 - **GitHub repository:** https://github.com/bhargavaroyal1777-cloud/Farm2Biz
+- - **Live app:** https://farm2biz-jgjxldhfzlcovktfc9rqqz.streamlit.app/
 - **YouTube demo (up to 5 minutes):** [Add video URL]
 
 ## 11. Future improvements
