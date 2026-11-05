@@ -210,15 +210,15 @@ def _token_hash(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-def remember_login(user: dict) -> None:
-    """Create a revocable, expiring browser login token; never store the raw token in the DB."""
+def remember_login(user: dict) -> str:
+    """Create a revocable, expiring token; the caller writes it to the browser on the next run."""
     token = secrets.token_urlsafe(32)
     expires = datetime.now(timezone.utc) + timedelta(days=AUTH_DAYS)
     with connect() as con:
         con.execute("DELETE FROM auth_sessions WHERE expires_at <= ?", (datetime.now(timezone.utc),))
         con.execute("INSERT INTO auth_sessions(token_hash,user_id,expires_at) VALUES(?,?,?)",
                     (_token_hash(token), user["id"], expires))
-    cookies.set(AUTH_COOKIE, token, max_age=AUTH_DAYS * 24 * 60 * 60, secure=True, same_site="lax")
+    return token
 
 
 def restore_login_from_cookie() -> None:
@@ -285,7 +285,7 @@ def auth_screen() -> None:
             if user:
                 st.session_state.user = user
                 if stay_signed_in:
-                    remember_login(user)
+                    st.session_state["_farm2biz_pending_login_cookie"] = remember_login(user)
                 else:
                     forget_login()
                 st.rerun()
@@ -749,6 +749,12 @@ def verify_db_integrity() -> tuple[bool, str]:
 
 def main() -> None:
     initialize_db()
+    # Set the cookie on the rerun after authentication. This gives the browser
+    # component time to write it before we render the signed-in app.
+    pending_cookie = st.session_state.pop("_farm2biz_pending_login_cookie", None)
+    if pending_cookie:
+        cookies.set(AUTH_COOKIE, pending_cookie, max_age=AUTH_DAYS * 24 * 60 * 60,
+                    secure=True, same_site="lax")
     apply_theme()
     if not st.session_state.get("farm2biz_integrity_checked"):
         valid, integrity_message = verify_db_integrity()
