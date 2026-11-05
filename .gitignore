@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+farm2biz.db
+*.sqlite
+*.sqlite3
+.streamlit/secrets.toml
