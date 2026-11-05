@@ -65,7 +65,7 @@ The application demonstrates a direct digital channel for farmers and business b
 
 ## 10. Submission links
 
-- **GitHub repository:** [Add repository URL]
+- **GitHub repository:** https://github.com/bhargavaroyal1777-cloud/Farm2Biz
 - **YouTube demo (up to 5 minutes):** [Add video URL]
 
 ## 11. Future improvements
